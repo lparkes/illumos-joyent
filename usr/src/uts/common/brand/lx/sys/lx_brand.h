@@ -59,12 +59,17 @@ extern "C" {
 #define	LX_LIB_PATH32	"/native/usr/lib/lx_brand.so.1"
 #define	LX_LIB_PATH64	"/native/usr/lib/amd64/lx_brand.so.1"
 
+#define	LX_VDSO_PATH32	"/native/usr/lib/brand/lx/lx_vdso.so.1"
+#define	LX_VDSO_PATH64	"/native/usr/lib/brand/lx/amd64/lx_vdso.so.1"
+
 #if defined(_LP64)
 #define	LX_LIB_PATH		LX_LIB_PATH64
 #define	LX_UNAME_MACHINE	LX_UNAME_MACHINE64
+#define	LX_VDSO_PATH		LX_VDSO_PATH64
 #else
 #define	LX_LIB_PATH		LX_LIB_PATH32
 #define	LX_UNAME_MACHINE	LX_UNAME_MACHINE32
+#define	LX_VDSO_PATH		LX_VDSO_PATH32
 #endif
 
 /*
@@ -95,7 +100,7 @@ extern "C" {
 #define	B_JUMP_TO_LINUX		139
 #define	B_SET_THUNK_PID		140
 #define	B_EXIT_AS_SIG		141
-#define	B_HELPER_WAITID		142
+/* formerly B_HELPER_WAITID	142 */
 #define	B_HELPER_CLONE		143
 #define	B_HELPER_SETGROUPS	144
 #define	B_HELPER_SIGQUEUE	145
@@ -103,7 +108,7 @@ extern "C" {
 #define	B_SET_NATIVE_STACK	147
 #define	B_SIGEV_THREAD_ID	148
 #define	B_OVERRIDE_KERN_VER	149
-#define	B_NOTIFY_VDSO_LOC	150
+#define	B_PTRACE_SIG_RETURN	150
 #define	B_GET_PERSONALITY	151
 
 #ifndef _ASM
@@ -229,7 +234,6 @@ typedef struct lx_elf_data64 {
 	uintptr_t	ed_entry;
 	uintptr_t	ed_base;
 	uintptr_t	ed_ldentry;
-	uintptr_t	ed_vdso;
 } lx_elf_data64_t;
 
 typedef struct lx_elf_data32 {
@@ -239,7 +243,6 @@ typedef struct lx_elf_data32 {
 	uint32_t	ed_entry;
 	uint32_t	ed_base;
 	uint32_t	ed_ldentry;
-	uint32_t	ed_vdso;
 } lx_elf_data32_t;
 
 #if defined(_LP64)
@@ -313,6 +316,9 @@ typedef struct lx_proc_data {
 
 	/* Linux process personality */
 	unsigned int l_personality;
+
+	/* VDSO location */
+	uintptr_t l_vdso;
 } lx_proc_data_t;
 
 #endif	/* _KERNEL */
@@ -373,7 +379,7 @@ typedef enum lx_accord_flags {
  * Flags values for "br_ptrace_flags" in the LWP-specific data.
  */
 typedef enum lx_ptrace_flags {
-	LX_PTF_SYSCALL = 0x01,
+	LX_PTF_SYSCALL = 0x01,		/* handling syscall or a trap */
 	LX_PTF_EXITING = 0x02,
 	LX_PTF_STOPPING = 0x04,
 	LX_PTF_INHERIT = 0x08,
@@ -381,7 +387,9 @@ typedef enum lx_ptrace_flags {
 	LX_PTF_PARENT_WAIT = 0x20,
 	LX_PTF_CLDPEND = 0x40,
 	LX_PTF_CLONING = 0x80,
-	LX_PTF_WAITPEND = 0x100
+	LX_PTF_WAITPEND = 0x100,
+	LX_PTF_NOSTOP = 0x200,		/* disable syscall stop event */
+	LX_PTF_INSYSCALL = 0x400	/* between syscall enter & exit */
 } lx_ptrace_flags_t;
 
 /*
@@ -624,7 +632,7 @@ extern int lx_runexe(klwp_t *, void *);
 extern void lx_switch_to_native(klwp_t *);
 
 extern int lx_syscall_enter(void);
-extern int lx_syscall_return(klwp_t *, int, long);
+extern void lx_syscall_return(klwp_t *, int, long);
 
 extern int lx_syscall_fast_enter(void);
 

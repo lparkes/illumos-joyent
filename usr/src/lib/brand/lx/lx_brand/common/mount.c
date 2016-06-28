@@ -262,7 +262,7 @@ i_lx_opt_verify(char *opts, mount_opt_t *mop)
 						if (suffix == 'k' ||
 						    suffix == 'm' ||
 						    suffix == 'g' ||
-						    suffix == '\%') {
+						    suffix == '%') {
 							stage = 2;
 							break;
 						}
@@ -335,7 +335,7 @@ opt_rm(char *opts, char *rmopt, char *retstr, int retlen)
 	optlen = optend - optstart;
 	if (optlen >= retlen)
 		return (-1);
-	strncpy(retstr, optstart, optlen);
+	(void) strncpy(retstr, optstart, optlen);
 	retstr[optlen] = '\0';
 
 	if (*optend == ',')
@@ -729,6 +729,30 @@ lx_mount(uintptr_t p1, uintptr_t p2, uintptr_t p3, uintptr_t p4,
 	lx_debug("\tlinux mount source: %s", source);
 	lx_debug("\tlinux mount target: %s", target);
 	lx_debug("\tlinux mount fstype: %s", fstype);
+
+	/*
+	 * While SunOS is picky about mount(2) target paths being absolute,
+	 * Linux is not so strict.  In order to facilitate this looser
+	 * requirement, the cwd is prepended to non-absolute target paths.
+	 */
+	if (target[0] != '/') {
+		char *cpath, *buf = NULL;
+		int len;
+
+		if ((cpath = getcwd(NULL, MAXPATHLEN)) == NULL) {
+			return (-ENOMEM);
+		}
+		len = asprintf(&buf, "%s/%s", cpath, target);
+		free(cpath);
+		if (len < 0) {
+			return (-ENOMEM);
+		} else if (len >= MAXPATHLEN) {
+			free(buf);
+			return (-ENAMETOOLONG);
+		}
+		(void) strlcpy(target, buf, sizeof (target));
+		free(buf);
+	}
 
 	/* Make sure we support the requested mount flags. */
 	if ((flags & ~LX_MS_SUPPORTED) != 0) {

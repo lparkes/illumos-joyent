@@ -89,6 +89,12 @@ typedef enum lx_xlate_dir {
 	LX_TO_SUNOS
 } lx_xlate_dir_t;
 
+/* enum for getpeername/getsockname handling */
+typedef enum lx_getname_type {
+	LX_GETPEERNAME,
+	LX_GETSOCKNAME
+} lx_getname_type_t;
+
 /*
  * What follows are a series of tables we use to translate Linux constants
  * into equivalent Illumos constants and back again.  I wish this were
@@ -123,8 +129,8 @@ static const int ltos_family[LX_AF_MAX + 1] =  {
 	AF_NOTSUPPORTED,	/* LX_AF_PPOX		*/
 	AF_NOTSUPPORTED,	/* LX_AF_WANPIPE	*/
 	AF_NOTSUPPORTED,	/* LX_AF_LLC		*/
-	AF_NOTSUPPORTED,	/* EMPTY		*/
-	AF_NOTSUPPORTED,	/* EMPTY		*/
+	AF_NOTSUPPORTED,	/* NONE			*/
+	AF_NOTSUPPORTED,	/* NONE			*/
 	AF_NOTSUPPORTED,	/* LX_AF_CAN		*/
 	AF_NOTSUPPORTED,	/* LX_AF_TIPC		*/
 	AF_NOTSUPPORTED,	/* LX_AF_BLUETOOTH	*/
@@ -194,7 +200,7 @@ static const int stol_socktype[SOCK_SEQPACKET + 1] = {
 #define	LTOS_SOCKTYPE(t)	\
 	((t) <= LX_SOCK_PACKET ? ltos_socktype[(t)] : SOCK_INVAL)
 #define	STOL_SOCKTYPE(t)	\
-	((t) <= SOCK_SEQPACKET ? ltos_socktype[(t)] : SOCK_INVAL)
+	((t) <= SOCK_SEQPACKET ? stol_socktype[(t)] : SOCK_INVAL)
 
 
 /*
@@ -204,6 +210,8 @@ static const int stol_socktype[SOCK_SEQPACKET + 1] = {
  */
 #define	ABST_PRFX "/tmp/.ABSK_"
 #define	ABST_PRFX_LEN (sizeof (ABST_PRFX) - 1)
+
+#define	DATAFILT	"datafilt"
 
 typedef enum {
 	lxa_none,
@@ -308,15 +316,15 @@ lx_xlate_sock_flags(int inflags, lx_xlate_dir_t dir)
 			break;
 		case LXFM_UNSUP:
 			if (match != 0) {
-				snprintf(buf, LX_UNSUP_BUFSZ,
+				(void) snprintf(buf, LX_UNSUP_BUFSZ,
 				    "unsupported sock flag %s", map->lxfm_name);
 				lx_unsupported(buf);
 			}
 		}
 	}
 	if (inflags != 0) {
-		snprintf(buf, LX_UNSUP_BUFSZ, "unsupported sock flags 0x%08x",
-		    inflags);
+		(void) snprintf(buf, LX_UNSUP_BUFSZ,
+		    "unsupported sock flags 0x%08x", inflags);
 		lx_unsupported(buf);
 	}
 
@@ -464,6 +472,7 @@ ltos_sockaddr_copyin(const struct sockaddr *inaddr, const socklen_t inlen,
 			*outlen = sizeof (struct sockaddr_ll);
 
 			/* sll_protocol must be translated */
+			/* LINTED: alignment */
 			sal = (struct sockaddr_ll *)laddr;
 			proto = ltos_pkt_proto(sal->sll_protocol);
 			if (proto < 0) {
@@ -564,6 +573,19 @@ stol_sockaddr_copyout(struct sockaddr *inaddr, socklen_t inlen,
 		if (inlen > sizeof (struct sockaddr_un)) {
 			return (EINVAL);
 		}
+
+		/*
+		 * On Linux an empty AF_UNIX address is returned as NULL, which
+		 * means setting the returned length to only encompass the
+		 * address family part of the buffer. However, some code also
+		 * references the address portion of the buffer and uses it,
+		 * even though the returned length has been shortened. Thus, we
+		 * clear the buffer to ensure that the address portion is NULL.
+		 */
+		if (inaddr->sa_data[0] == '\0') {
+			bzero(&buf, sizeof (buf));
+			inlen = sizeof (inaddr->sa_family);
+		}
 		break;
 
 	case (sa_family_t)AF_NOTSUPPORTED:
@@ -628,7 +650,13 @@ typedef struct lx_cmsg_xlate {
 static int cmsg_conv_generic(struct cmsghdr *, struct cmsghdr *);
 static int stol_conv_ucred(struct cmsghdr *, struct cmsghdr *);
 static int ltos_conv_ucred(struct cmsghdr *, struct cmsghdr *);
+static int stol_conv_recvttl(struct cmsghdr *, struct cmsghdr *);
 
+/*
+ * Table describing SunOS <-> Linux cmsg translation mappings.
+ * Certain types (IP_RECVTTL) are only converted in one direction and are
+ * indicated by one of the translation functions being set to NULL.
+ */
 static lx_cmsg_xlate_t lx_cmsg_xlate_tbl[] = {
 	{ SOL_SOCKET, SCM_RIGHTS, cmsg_conv_generic,
 	    LX_SOL_SOCKET, LX_SCM_RIGHTS, cmsg_conv_generic },
@@ -638,6 +666,10 @@ static lx_cmsg_xlate_t lx_cmsg_xlate_tbl[] = {
 	    LX_SOL_SOCKET, LX_SCM_TIMESTAMP, cmsg_conv_generic },
 	{ IPPROTO_IP, IP_PKTINFO, cmsg_conv_generic,
 	    LX_IPPROTO_IP, LX_IP_PKTINFO, cmsg_conv_generic },
+	{ IPPROTO_IP, IP_RECVTTL, stol_conv_recvttl,
+	    LX_IPPROTO_IP, LX_IP_TTL, NULL },
+	{ IPPROTO_IP, IP_TTL, cmsg_conv_generic,
+	    LX_IPPROTO_IP, LX_IP_TTL, cmsg_conv_generic },
 	{ IPPROTO_IPV6, IPV6_HOPLIMIT, cmsg_conv_generic,
 	    LX_IPPROTO_IPV6, LX_IPV6_HOPLIMIT, cmsg_conv_generic },
 	{ IPPROTO_IPV6, IPV6_PKTINFO, cmsg_conv_generic,
@@ -695,11 +727,13 @@ stol_conv_ucred(struct cmsghdr *inmsg, struct cmsghdr *omsg)
 	 * Format the data correctly in the omsg buffer.
 	 */
 	if (omsg != NULL) {
-		struct ucred_s *scred = (struct ucred_s *)CMSG_CONTENT(inmsg);
+		struct ucred_s *scred;
 		prcred_t *cr;
 		lx_ucred_t lcred;
 
+		scred = (struct ucred_s *)CMSG_CONTENT(inmsg);
 		lcred.lxu_pid = scred->uc_pid;
+		/* LINTED: alignment */
 		cr = UCCRED(scred);
 		if (cr != NULL) {
 			lcred.lxu_uid = cr->pr_euid;
@@ -723,6 +757,7 @@ ltos_conv_ucred(struct cmsghdr *inmsg, struct cmsghdr *omsg)
 		lx_ucred_t *lcred;
 
 		uc = (struct ucred_s *)CMSG_CONTENT(omsg);
+		/* LINTED: alignment */
 		pc = (prcred_t *)((char *)uc + sizeof (struct ucred_s));
 
 		uc->uc_credoff = sizeof (struct ucred_s);
@@ -737,6 +772,25 @@ ltos_conv_ucred(struct cmsghdr *inmsg, struct cmsghdr *omsg)
 	return (sizeof (struct cmsghdr) + sizeof (struct ucred_s) +
 	    sizeof (prcred_t));
 
+}
+
+static int
+stol_conv_recvttl(struct cmsghdr *inmsg, struct cmsghdr *omsg)
+{
+	/*
+	 * SunOS communicates the TTL of incoming packets via IP_RECVTTL using
+	 * a uint8_t value instead of IP_TTL using an int. This conversion is
+	 * only needed in the one direction since Linux does not handle
+	 * IP_RECVTTL in the sendmsg path.
+	 */
+	if (omsg != NULL) {
+		uint8_t *inttl = (uint8_t *)CMSG_CONTENT(inmsg);
+		int *ottl = (int *)CMSG_CONTENT(omsg);
+
+		*ottl = (int)*inttl;
+	}
+
+	return (sizeof (struct cmsghdr) + sizeof (int));
 }
 
 static int
@@ -764,8 +818,8 @@ lx_xlate_cmsg(struct cmsghdr *inmsg, struct cmsghdr *omsg, lx_xlate_dir_t dir)
 		lx_cmsg_xlate_t *xlate = &lx_cmsg_xlate_tbl[i];
 		if (dir == LX_TO_SUNOS &&
 		    inmsg->cmsg_level == xlate->lcx_linux_level &&
-		    inmsg->cmsg_type == xlate->lcx_linux_type) {
-			ASSERT(xlate->lcx_ltos_conv != NULL);
+		    inmsg->cmsg_type == xlate->lcx_linux_type &&
+		    xlate->lcx_ltos_conv != NULL) {
 			len = xlate->lcx_ltos_conv(inmsg, omsg);
 			if (omsg != NULL) {
 				omsg->cmsg_len = len;
@@ -775,8 +829,8 @@ lx_xlate_cmsg(struct cmsghdr *inmsg, struct cmsghdr *omsg, lx_xlate_dir_t dir)
 			return (len);
 		} else if (dir == SUNOS_TO_LX &&
 		    inmsg->cmsg_level == xlate->lcx_sunos_level &&
-		    inmsg->cmsg_type == xlate->lcx_sunos_type) {
-			ASSERT(xlate->lcx_stol_conv != NULL);
+		    inmsg->cmsg_type == xlate->lcx_sunos_type &&
+		    xlate->lcx_stol_conv != NULL) {
 			len = xlate->lcx_stol_conv(inmsg, omsg);
 			if (omsg != NULL) {
 				omsg->cmsg_len = len;
@@ -1080,6 +1134,7 @@ lx_cmsg_try_ucred(sonode_t *so, struct nmsghdr *msg, socklen_t origlen)
 	lx_socket_aux_data_t *sad;
 	struct cmsghdr *cmsg = NULL;
 	int msgsize;
+	cred_t *cred;
 
 	if (origlen == 0) {
 		return (0);
@@ -1091,7 +1146,15 @@ lx_cmsg_try_ucred(sonode_t *so, struct nmsghdr *msg, socklen_t origlen)
 	}
 	mutex_exit(&sad->lxsad_lock);
 
-	msgsize = ucredminsize(so->so_peercred) + sizeof (struct cmsghdr);
+	mutex_enter(&so->so_lock);
+	if (so->so_peercred == NULL) {
+		mutex_exit(&so->so_lock);
+		return (0);
+	}
+	crhold(cred = so->so_peercred);
+	mutex_exit(&so->so_lock);
+
+	msgsize = ucredminsize(cred) + sizeof (struct cmsghdr);
 	if (msg->msg_control == NULL) {
 		msg->msg_controllen = msgsize;
 		msg->msg_control = cmsg = kmem_zalloc(msgsize, KM_SLEEP);
@@ -1115,6 +1178,7 @@ lx_cmsg_try_ucred(sonode_t *so, struct nmsghdr *msg, socklen_t origlen)
 				 * being attached anyways, there is no need for
 				 * us to do it manually
 				 */
+				crfree(cred);
 				return (0);
 			}
 			cmsg = CMSG_NEXT(cmsg);
@@ -1126,6 +1190,7 @@ lx_cmsg_try_ucred(sonode_t *so, struct nmsghdr *msg, socklen_t origlen)
 
 			if (newsize < msg->msg_controllen) {
 				/* size overflow, bail */
+				crfree(cred);
 				return (-1);
 			}
 			newbuf = kmem_alloc(newsize, KM_SLEEP);
@@ -1141,8 +1206,8 @@ lx_cmsg_try_ucred(sonode_t *so, struct nmsghdr *msg, socklen_t origlen)
 	cmsg->cmsg_level = SOL_SOCKET;
 	cmsg->cmsg_type = SCM_UCRED;
 	cmsg->cmsg_len = msgsize;
-	(void) cred2ucred(so->so_peercred, so->so_cpid, CMSG_CONTENT(cmsg),
-	    CRED());
+	(void) cred2ucred(cred, so->so_cpid, CMSG_CONTENT(cmsg), CRED());
+	crfree(cred);
 	return (0);
 }
 
@@ -2720,6 +2785,7 @@ lx_setsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t optlen)
 
 	if (optname == LX_TCP_DEFER_ACCEPT) {
 		int *intval;
+		char *dfp;
 
 		/*
 		 * Emulate TCP_DEFER_ACCEPT using the datafilt(7M) socket
@@ -2731,20 +2797,27 @@ lx_setsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t optlen)
 		}
 		intval = (int *)optval;
 
+		/*
+		 * socket_setsockopt asserts that the optval is aligned, so
+		 * we use kmem_alloc to ensure this.
+		 */
+		dfp = (char *)kmem_alloc(sizeof (DATAFILT), KM_SLEEP);
+		(void) strcpy(dfp, DATAFILT);
 
 		if (*intval > 0) {
 			error = socket_setsockopt(so, SOL_FILTER, FIL_ATTACH,
-			    "datafilt", 9, CRED());
+			    dfp, 9, CRED());
 			if (error == EEXIST) {
 				error = 0;
 			}
 		} else {
 			error = socket_setsockopt(so, SOL_FILTER, FIL_DETACH,
-			    "datafilt", 9, CRED());
+			    dfp, 9, CRED());
 			if (error == ENXIO) {
 				error = 0;
 			}
 		}
+		kmem_free(dfp, sizeof (DATAFILT));
 		return (error);
 	}
 
@@ -2791,6 +2864,7 @@ lx_setsockopt_socket(sonode_t *so, int optname, void *optval, socklen_t optlen)
 		}
 		lbp = (struct lx_bpf_program *)optval;
 		bp.bf_len = lbp->bf_len;
+		/* LINTED: alignment */
 		bp.bf_insns = (struct bpf_insn *)lbp->bf_insns;
 		optval = &bp;
 		break;
@@ -3022,7 +3096,7 @@ lx_getsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t *optlen)
 			socklen_t len = sizeof (fi);
 
 			if ((error = socket_getsockopt(so, SOL_FILTER,
-			    FIL_LIST, fi, &len, 0, CRED()) != 0)) {
+			    FIL_LIST, fi, &len, 0, CRED())) != 0) {
 				*optlen = sizeof (int);
 				return (error);
 			}
@@ -3206,6 +3280,13 @@ lx_setsockopt(int sock, int level, int optname, void *optval, socklen_t optlen)
 		if (optlen > sizeof (stkbuf)) {
 			buflen = optlen;
 			optbuf = kmem_alloc(optlen, KM_SLEEP);
+		} else {
+			/*
+			 * Zero the on-stack buffer to avoid poisoning smaller
+			 * optvals with stack garbage.
+			 */
+			stkbuf[0] = 0;
+			stkbuf[1] = 0;
 		}
 		if (copyin(optval, optbuf, optlen) != 0) {
 			if (buflen != 0) {
@@ -3264,8 +3345,8 @@ lx_setsockopt(int sock, int level, int optname, void *optval, socklen_t optlen)
 	if (error == ENOPROTOOPT) {
 		char buf[LX_UNSUP_BUFSZ];
 
-		snprintf(buf, LX_UNSUP_BUFSZ, "setsockopt(%d, %d)", level,
-		    optname);
+		(void) snprintf(buf, LX_UNSUP_BUFSZ, "setsockopt(%d, %d)",
+		    level, optname);
 		lx_unsupported(buf);
 	}
 	if (buflen != 0) {
@@ -3355,8 +3436,8 @@ lx_getsockopt(int sock, int level, int optname, void *optval,
 	if (error == ENOPROTOOPT) {
 		char buf[LX_UNSUP_BUFSZ];
 
-		snprintf(buf, LX_UNSUP_BUFSZ, "getsockopt(%d, %d)", level,
-		    optname);
+		(void) snprintf(buf, LX_UNSUP_BUFSZ, "getsockopt(%d, %d)",
+		    level, optname);
 		lx_unsupported(buf);
 	}
 	if (copyout(&optlen, optlenp, sizeof (optlen)) != 0) {
@@ -3378,6 +3459,204 @@ lx_getsockopt(int sock, int level, int optname, void *optval,
 	return (0);
 }
 
+long
+lx_getname_common(lx_getname_type_t type, int sockfd, void *np, int *nlp)
+{
+	struct sockaddr_storage buf;
+	struct sockaddr *name = (struct sockaddr *)&buf;
+	socklen_t namelen, namelen_orig;
+	int err, tmp;
+	struct sonode *so;
+
+	/* We need to validate the name address up front to pass LTP. */
+	if (copyin(np, &tmp, sizeof (tmp)) != 0)
+		return (set_errno(EFAULT));
+
+	if (copyin(nlp, &namelen, sizeof (socklen_t)) != 0)
+		return (set_errno(EFAULT));
+	namelen_orig = namelen;
+
+	/* LTP can pass -1 */
+	if ((int)namelen < 0)
+		return (set_errno(EINVAL));
+
+	if ((so = getsonode(sockfd, &err, NULL)) == NULL)
+		return (set_errno(err));
+
+	bzero(&buf, sizeof (buf));
+	namelen = sizeof (struct sockaddr_storage);
+	if (type == LX_GETPEERNAME) {
+		err = socket_getpeername(so, name, &namelen, B_FALSE, CRED());
+	} else {
+		err = socket_getsockname(so, name, &namelen, CRED());
+	}
+
+	if (err == 0) {
+		ASSERT(namelen <= so->so_max_addr_len);
+		err = stol_sockaddr_copyout(name, namelen,
+		    (struct sockaddr *)np, (socklen_t *)nlp, namelen_orig);
+	}
+
+	releasef(sockfd);
+	return (err != 0 ? set_errno(err) : 0);
+}
+
+long
+lx_getpeername(int sockfd, void *np, int *nlp)
+{
+	return (lx_getname_common(LX_GETPEERNAME, sockfd, np, nlp));
+}
+
+long
+lx_getsockname(int sockfd, void *np, int *nlp)
+{
+	return (lx_getname_common(LX_GETSOCKNAME, sockfd, np, nlp));
+}
+
+static int
+lx_accept_common(int sock, struct sockaddr *name, socklen_t *nlp, int flags)
+{
+	struct sonode *so;
+	file_t *fp;
+	int error;
+	socklen_t namelen;
+	struct sonode *nso;
+	struct vnode *nvp;
+	struct file *nfp;
+	int nfd;
+	int arg;
+
+	if (flags & ~(LX_SOCK_CLOEXEC | LX_SOCK_NONBLOCK)) {
+		return (set_errno(EINVAL));
+	}
+
+	if ((so = getsonode(sock, &error, &fp)) == NULL)
+		return (set_errno(error));
+
+	if (name != NULL) {
+		/*
+		 * The Linux man page says that -1 is returned and errno is set
+		 * to EFAULT if the "name" address is bad, but it is silent on
+		 * what to set errno to if the "namelen" address is bad.
+		 * LTP expects EINVAL.
+		 *
+		 * Note that we must first check the name pointer, as the Linux
+		 * docs state nothing is copied out if the "name" pointer is
+		 * NULL. If it is NULL, we don't care about the namelen
+		 * pointer's value or about dereferencing it.
+		 */
+		if (copyin(nlp, &namelen, sizeof (namelen))) {
+			releasef(sock);
+			return (set_errno(EINVAL));
+		}
+		if (namelen == 0) {
+			name = NULL;
+		}
+	} else {
+		namelen = 0;
+	}
+
+	/*
+	 * Allocate the user fd before socket_accept() in order to
+	 * catch EMFILE errors before calling socket_accept().
+	 */
+	if ((error = falloc(NULL, FWRITE|FREAD, &nfp, &nfd)) != 0) {
+		eprintsoline(so, EMFILE);
+		releasef(sock);
+		return (set_errno(error));
+	}
+	if ((error = socket_accept(so, fp->f_flag, CRED(), &nso)) != 0) {
+		setf(nfd, NULL);
+		unfalloc(nfp);
+		releasef(sock);
+		return (set_errno(error));
+	}
+
+	nvp = SOTOV(nso);
+
+	if (namelen != 0) {
+		socklen_t addrlen = sizeof (struct sockaddr_storage);
+		struct sockaddr_storage buf;
+		struct sockaddr *addrp = (struct sockaddr *)&buf;
+
+		if ((error = socket_getpeername(nso, addrp, &addrlen, B_TRUE,
+		    CRED())) == 0) {
+			error = stol_sockaddr_copyout(addrp, addrlen,
+			    name, nlp, namelen);
+			/*
+			 * Logic might dictate that we should check if we can
+			 * write to the namelen pointer earlier so we don't
+			 * accept a pending connection only to fail the call
+			 * because we can't write the namelen value back out.
+			 * However, testing shows Linux does indeed fail the
+			 * call after accepting the connection so we must
+			 * behave in a compatible manner.
+			 */
+		} else {
+			ASSERT(error == EINVAL || error == ENOTCONN);
+			error = ECONNABORTED;
+		}
+	}
+
+	if (error != 0) {
+		setf(nfd, NULL);
+		unfalloc(nfp);
+		(void) socket_close(nso, 0, CRED());
+		socket_destroy(nso);
+		releasef(sock);
+		return (set_errno(error));
+	}
+
+	/* Fill in the entries that falloc reserved */
+	nfp->f_vnode = nvp;
+	mutex_exit(&nfp->f_tlock);
+	setf(nfd, nfp);
+
+	/* Act on LX_SOCK_CLOEXEC from flags */
+	if (flags & LX_SOCK_CLOEXEC) {
+		f_setfd(nfd, FD_CLOEXEC);
+	}
+
+	/*
+	 * In Linux, accept()ed sockets do not inherit anything set by fcntl(),
+	 * so either explicitly set the flags or filter those out.
+	 *
+	 * The VOP_SETFL code is a simplification of the F_SETFL code in
+	 * fcntl(). Ignore any errors from VOP_SETFL.
+	 */
+	arg = 0;
+	if (flags & LX_SOCK_NONBLOCK)
+		arg |= FNONBLOCK;
+
+	error = VOP_SETFL(nvp, nfp->f_flag, arg, nfp->f_cred, NULL);
+	if (error != 0) {
+		eprintsoline(so, error);
+		error = 0;
+	} else {
+		mutex_enter(&nfp->f_tlock);
+		nfp->f_flag &= ~FMASK | (FREAD|FWRITE);
+		nfp->f_flag |= arg;
+		mutex_exit(&nfp->f_tlock);
+	}
+
+	releasef(sock);
+	return (nfd);
+}
+
+long
+lx_accept(int sockfd, void *np, int *nlp)
+{
+	return (lx_accept_common(sockfd, (struct sockaddr *)np,
+	    (socklen_t *)nlp, 0));
+}
+
+long
+lx_accept4(int sockfd, void *np, int *nlp, int flags)
+{
+	return (lx_accept_common(sockfd, (struct sockaddr *)np,
+	    (socklen_t *)nlp, flags));
+}
+
 #if defined(_SYSCALL32_IMPL)
 
 #define	LX_SYS_SOCKETCALL		102
@@ -3393,9 +3672,9 @@ static struct {
 	lx_bind,	3,	/* bind */
 	lx_connect,	3,	/* connect */
 	NULL,		2,	/* listen */
-	NULL,		3,	/* accept */
-	NULL,		3,	/* getsockname */
-	NULL,		3,	/* getpeername */
+	lx_accept,	3,	/* accept */
+	lx_getsockname,	3,	/* getsockname */
+	lx_getpeername,	3,	/* getpeername */
 	NULL,		4,	/* socketpair */
 	lx_send,	4,	/* send */
 	lx_recv,	4,	/* recv */
@@ -3406,7 +3685,7 @@ static struct {
 	lx_getsockopt,	5,	/* getsockopt */
 	lx_sendmsg,	3,	/* sendmsg */
 	lx_recvmsg,	3,	/* recvmsg */
-	NULL,		4,	/* accept4 */
+	lx_accept4,	4,	/* accept4 */
 	NULL,		5,	/* recvmmsg */
 	NULL,		4	/* sendmmsg */
 };

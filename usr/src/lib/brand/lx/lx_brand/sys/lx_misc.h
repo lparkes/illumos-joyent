@@ -25,7 +25,7 @@
  */
 
 /*
- * Copyright 2015 Joyent, Inc.  All rights reserved.
+ * Copyright 2016 Joyent, Inc.  All rights reserved.
  */
 
 #ifndef _SYS_LX_H
@@ -51,6 +51,7 @@ extern char lx_release[LX_KERN_RELEASE_MAX];
 extern char lx_cmd_name[MAXNAMLEN];
 extern pid_t zoneinit_pid;
 extern int lx_is_vforked;
+extern boolean_t lx_no_abort_handler;
 
 /*
  * Values Linux expects for init
@@ -169,8 +170,6 @@ extern void lx_ptrace_clone_begin(int, boolean_t);
 
 extern int lx_check_alloca(size_t);
 #define	SAFE_ALLOCA(sz)	(lx_check_alloca(sz) ? alloca(sz) : NULL)
-
-extern int ltos_at_flag(int lflag, int allow, boolean_t enforce);
 
 extern void lx_init_tsd(lx_tsd_t *);
 extern int lx_alloc_stack(void **, size_t *);

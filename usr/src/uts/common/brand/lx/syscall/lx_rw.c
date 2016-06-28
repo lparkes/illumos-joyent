@@ -791,6 +791,9 @@ lx_preadv(int fdes, void *iovp, int iovcnt, off64_t offset)
 	} else if (fp->f_vnode->v_type == VDIR) {
 		error = EISDIR;
 		goto out;
+	} else if (fp->f_vnode->v_type == VFIFO) {
+		error = ESPIPE;
+		goto out;
 	}
 
 	auio.uio_iov = aiov;

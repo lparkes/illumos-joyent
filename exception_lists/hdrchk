@@ -46,7 +46,6 @@ usr/src/cmd/mandoc/mansearch.h
 usr/src/cmd/mandoc/mdoc.h
 usr/src/cmd/mandoc/out.h
 usr/src/cmd/mandoc/term.h
-usr/src/common/openssl/crypto/krb5/krb5_asn.h
 usr/src/grub/grub-0.97/stage2/shared.h
 usr/src/lib/libdwarf/common/cmplrs/dwarf_addr_finder.h
 usr/src/lib/libdwarf/common/config.h
@@ -364,18 +363,9 @@ usr/src/uts/common/io/e1000api/e1000_manage.h
 usr/src/uts/common/io/e1000api/e1000_nvm.h
 usr/src/uts/common/io/e1000api/e1000_phy.h
 usr/src/uts/common/io/e1000api/e1000_regs.h
+usr/src/uts/common/io/ixgbe/core/ixgbe_common.h
 usr/src/uts/common/io/ixgbe/ixgbe_common.h
 usr/src/uts/common/io/i40e/core/i40e_adminq_cmd.h
-usr/src/uts/common/io/i40e/core/i40e_adminq.h
-usr/src/uts/common/io/i40e/core/i40e_alloc.h
-usr/src/uts/common/io/i40e/core/i40e_devids.h
-usr/src/uts/common/io/i40e/core/i40e_hmc.h
-usr/src/uts/common/io/i40e/core/i40e_lan_hmc.h
-usr/src/uts/common/io/i40e/core/i40e_prototype.h
-usr/src/uts/common/io/i40e/core/i40e_register.h
-usr/src/uts/common/io/i40e/core/i40e_status.h
-usr/src/uts/common/io/i40e/core/i40e_type.h
-usr/src/uts/common/io/i40e/core/i40e_virtchnl.h
 usr/src/uts/common/io/nfp/nfp.h
 usr/src/uts/common/io/nfp/nfpci.h
 usr/src/uts/common/io/nfp/nfp_error.h

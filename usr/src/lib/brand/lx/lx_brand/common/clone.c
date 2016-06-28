@@ -266,6 +266,7 @@ clone_start(void *arg)
 	 * Jump to the Linux process.  This call cannot return.
 	 */
 	lx_jump_to_linux(&cs->c_uc);
+	/* NOTREACHED */
 }
 
 /*
@@ -425,16 +426,15 @@ lx_clone(uintptr_t p1, uintptr_t p2, uintptr_t p3, uintptr_t p4, uintptr_t p5)
 		 * path here.
 		 */
 		if (rval != 0) {
-			if (!IS_VFORK(flags) || rval < 0) {
-				/*
-				 * Run the stack management postfork handler in
-				 * the parent.  If this was a vfork(2), we only
-				 * run it in the parent if the fork operation
-				 * failed; the vfork(2) child has already run
-				 * it for our address space.
-				 */
-				lx_stack_postfork();
-			}
+			/*
+			 * Run the stack management postfork handler in the
+			 * parent.  In the CLONE_VFORK case, where it only
+			 * needs to be performed once due to the shared address
+			 * space, it is critical that this step is performed in
+			 * the parent and not the child.  The latter can result
+			 * in un-woken threads blocked on lx_stack_list_lock.
+			 */
+			lx_stack_postfork();
 
 			/*
 			 * Since we've already forked, we can't do much if
@@ -464,12 +464,13 @@ lx_clone(uintptr_t p1, uintptr_t p2, uintptr_t p3, uintptr_t p4, uintptr_t p5)
 		 * process.
 		 */
 
-		/*
-		 * Run the stack management postfork handler in the child.
-		 */
-		lx_stack_postfork();
-
 		if (!IS_VFORK(flags)) {
+			/*
+			 * For non-vfork children run the stack management
+			 * postfork handler.
+			 */
+			lx_stack_postfork();
+
 			/*
 			 * We must free the stacks and thread-specific data
 			 * objects for every thread except the one duplicated
@@ -522,7 +523,9 @@ lx_clone(uintptr_t p1, uintptr_t p2, uintptr_t p3, uintptr_t p4, uintptr_t p5)
 			 * not to mention myriad other undefined behaviour.
 			 */
 			bcopy(ucp, &vforkuc, sizeof (vforkuc));
-			vforkuc.uc_brand_data[1] -= LX_NATIVE_STACK_VFORK_GAP;
+			vforkuc.uc_brand_data[1] =
+			    (caddr_t)vforkuc.uc_brand_data[1] -
+			    LX_NATIVE_STACK_VFORK_GAP;
 			vforkuc.uc_link = NULL;
 
 			lx_debug("\tvfork native stack sp %p",

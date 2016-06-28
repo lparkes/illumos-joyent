@@ -191,6 +191,7 @@ process_vm_readv03
 process_vm_writev01
 process_vm_writev02
 prot_hsymlinks
+pty01			# OS-5437
 read02
 readahead01
 readahead02
@@ -201,6 +202,9 @@ sched_rr_get_interval02
 sched_rr_get_interval03
 sched_getscheduler01
 sched_getscheduler02
+sched_getattr01
+sched_getattr02
+sched_setattr01
 semctl01
 semop02
 sendfile02		# OS-3296

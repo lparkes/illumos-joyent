@@ -148,12 +148,13 @@ struct execa;
  * b_sendsig_stack - Override stack used for signal delivery
  * b_setid_clear - Override setid_clear behavior
  * b_pagefault - Trap pagefault events
+ * b_intp_parse_arg - Controls interpreter argument handling (allow 1 or all)
  */
 struct brand_ops {
 	void	(*b_init_brand_data)(zone_t *, kmutex_t *);
 	void	(*b_free_brand_data)(zone_t *);
 	int	(*b_brandsys)(int, int64_t *, uintptr_t, uintptr_t, uintptr_t,
-		uintptr_t, uintptr_t);
+		uintptr_t);
 	void	(*b_setbrand)(struct proc *);
 	int	(*b_getattr)(zone_t *, int, void *, size_t *);
 	int	(*b_setattr)(zone_t *, int, void *, size_t);
@@ -196,6 +197,7 @@ struct brand_ops {
 	int	(*b_setid_clear)(vattr_t *vap, cred_t *cr);
 	int	(*b_pagefault)(proc_t *, klwp_t *, caddr_t, enum fault_type,
 	    enum seg_rw);
+	boolean_t b_intp_parse_arg;
 };
 
 /*
