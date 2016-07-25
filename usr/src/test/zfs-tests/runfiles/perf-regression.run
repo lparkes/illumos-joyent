@@ -10,19 +10,21 @@
 #
 
 #
-# Copyright (c) 2012 by Delphix. All rights reserved.
+# Copyright (c) 2015 by Delphix. All rights reserved.
 #
 
 [DEFAULT]
-pre =
-verbose = False
+pre = setup
 quiet = False
-timeout = 60
-post =
+pre_user = root
+user = root
+timeout = 0
+post_user = root
+post = cleanup
 outputdir = /var/tmp/test_results
 
-[/opt/os-tests/tests/poll_test]
-user = root
-
-[/opt/os-tests/tests/sigqueue]
-tests = ['sigqueue_queue_size']
+[/opt/zfs-tests/tests/perf/regression]
+tests = ['sequential_writes', 'sequential_reads', 'sequential_reads_cached',
+    'sequential_reads_cached_clone', 'random_reads', 'random_writes',
+    'random_readwrite']
+post =
